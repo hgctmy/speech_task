@@ -39,7 +39,7 @@ def process_segment(segment_line, label_line, audio_dir, feature_extractor, samp
         # 音声ファイルの読み込み
         audio_file_path = os.path.join(audio_dir, f"{audio_filename}.wav")
         try:
-            waveform, sr = librosa.load(audio_file_path, sr=sample_rate)  # librosaで読み込み、強制的にsample_rateを指定
+            waveform, sr = librosa.load(audio_file_path, sr=sample_rate)
             logger.info(f"Loaded audio with sample rate: {sr} using librosa")
         except FileNotFoundError:
             logger.error(f"Audio file not found: {audio_file_path}")
@@ -72,7 +72,7 @@ def process_segment(segment_line, label_line, audio_dir, feature_extractor, samp
                 return_tensors="pt",
                 padding=False
             )
-            segment_waveform_processed = encoding['input_values'].squeeze(0)  # (sequence_length,)
+            segment_waveform_processed = encoding['input_values'].squeeze(0)
 
             with torch.no_grad():
                 wavlm_output_length = len(wavlm_model.forward(encoding['input_values']).last_hidden_state.squeeze(0))
@@ -201,11 +201,18 @@ def data_collator(batch):
 
 
 def custom_bce_with_logits_loss(logits, target, weight=None, ignore_index=-100):
-    mask = target != ignore_index  # 無視しない要素のマスクを作成
-    masked_logits = logits[mask]
-    masked_target = target[mask]
+    mask = target != ignore_index
+
+    mask_1d = mask.view(-1)
+
+    masked_logits = logits.view(-1)[mask_1d]
+    masked_target = target.view(-1)[mask_1d]
+
+    masked_target = masked_target.to(logits.device)
+
     if weight is not None:
-        masked_weight = weight[mask]
+        weight = weight.to(logits.device)
+        masked_weight = weight[masked_target.long()]
         loss = F.binary_cross_entropy_with_logits(masked_logits, masked_target, weight=masked_weight)
     else:
         loss = F.binary_cross_entropy_with_logits(masked_logits, masked_target)
@@ -222,30 +229,25 @@ class SpeechImportanceModel(nn.Module):
         # 最終的な分類層
         self.classifier = nn.Linear(self.wavlm.config.hidden_size, 1)
 
-    def forward(self, input_values, attention_mask=None, labels=None, weights=None):
-        """
-        Args:
-            input_values (torch.Tensor): 生の音声波形 (batch_size, sequence_length)
-            attention_mask (torch.Tensor, optional): アテンションマスク (batch_size, sequence_length)
-            labels (torch.Tensor, optional): ラベル (batch_size, seq_len)
-
-        Returns:
-            torch.Tensor: 各フレームの重要度の確率 (batch_size, seq_len) or loss
-        """
+    def forward(self, input_values, attention_mask=None, labels=None):
         outputs = self.wavlm(input_values, attention_mask=attention_mask)
         hidden_states = outputs.last_hidden_state
 
         logits = self.classifier(hidden_states).squeeze(-1)
 
         if labels is not None:
-            loss = custom_bce_with_logits_loss(logits, labels, weight=weights)  # weightを損失関数に渡す
+            # ここでweightを適用
+            if hasattr(self, 'loss_weight'):
+                loss = custom_bce_with_logits_loss(logits, labels, weight=self.loss_weight)
+            else:
+                loss = custom_bce_with_logits_loss(logits, labels)
             return {'loss': loss, 'probs': torch.sigmoid(logits)}
         else:
             return torch.sigmoid(logits)
 
 
 def compute_metrics(pred):
-    preds = torch.sigmoid(torch.tensor(pred.predictions))  # 予測値をシグモイドで変換
+    preds = torch.sigmoid(torch.tensor(pred.predictions))
     labels = pred.label_ids
 
     # パディング部分をマスク
@@ -261,10 +263,7 @@ class MyTrainer(Trainer):
     def compute_loss(self, model, inputs, return_outputs=False):
         inputs = self._prepare_inputs(inputs)
         labels = inputs.pop("labels")
-        weights = inputs.pop("weights") if "weights" in inputs else None  # weightsを取得
-
-        outputs = model(**inputs, labels=labels, weights=weights)  # weightsをmodelに渡す
-
+        outputs = model(**inputs, labels=labels)
         loss = outputs["loss"]
         return (loss, outputs) if return_outputs else loss
 
@@ -307,7 +306,7 @@ def main():
     dataset = SpeechSegmentDataset(
         preprocessed_dir=preprocessed_dir
     )
-    # クラスの重みを計算
+    # クラスの重みを計算（main関数内に移動）
     labels = []
     for data in dataset:
         labels.extend(data['labels'].tolist())
@@ -316,17 +315,18 @@ def main():
     negative_count = torch.sum(labels_tensor == 0).item()
     total_count = len(labels)
 
-    # 重みの計算
     weight_positive = total_count / (2 * positive_count) if positive_count > 0 else 0.5
     weight_negative = total_count / (2 * negative_count) if negative_count > 0 else 0.5
 
-    # weightが0にならないように調整
     weight_positive = max(weight_positive, 1e-6)
     weight_negative = max(weight_negative, 1e-6)
 
     weights = torch.tensor([weight_negative, weight_positive]).to(device)
-    logger.info(f"Total dataset size: {len(dataset)}")
-
+    # モデルの初期化
+    model = SpeechImportanceModel()
+    model.to(device)
+    # モデルに重みを設定
+    model.loss_weight = weights
     # データセットの分割（例: 80% トレーニング、20% 評価）
     train_size = int(0.8 * len(dataset))
     eval_size = len(dataset) - train_size
@@ -334,10 +334,6 @@ def main():
 
     logger.info(f"Training dataset size: {len(train_dataset)}")
     logger.info(f"Evaluation dataset size: {len(eval_dataset)}")
-
-    # モデルの初期化
-    model = SpeechImportanceModel()
-    model.to(device)
 
     checkpoint_path = None
     if os.path.exists(output_dir):  # output_dirが存在するか確認
@@ -368,7 +364,6 @@ def main():
                     metric_for_best_model="f1",
                     greater_is_better=True,
                     fp16=torch.cuda.is_available(),
-                    # resume_from_checkpoint=checkpoint_path # Trainerに直接パスを渡す方法
                 ),
                 train_dataset=train_dataset,
                 eval_dataset=eval_dataset,
@@ -376,7 +371,7 @@ def main():
                 data_collator=data_collator,
                 compute_metrics=compute_metrics
             )
-            trainer.train(resume_from_checkpoint=checkpoint_path, weights=weights)  # Trainerのtrainメソッドに渡す方法（推奨）
+            trainer.train(resume_from_checkpoint=checkpoint_path)
         else:
             logger.info("チェックポイントが見つかりませんでした。新規にトレーニングを開始します。")
             trainer = MyTrainer(
@@ -405,7 +400,7 @@ def main():
                 data_collator=data_collator,
                 compute_metrics=compute_metrics
             )
-            trainer.train(weights=weights)
+            trainer.train()
     else:  # output_dirが存在しない場合
         logger.info("出力ディレクトリが見つかりませんでした。新規にトレーニングを開始します。")
         os.makedirs(output_dir)  # output_dirを作成
@@ -435,7 +430,7 @@ def main():
             data_collator=data_collator,
             compute_metrics=compute_metrics
         )
-        trainer.train(weights=weights)
+        trainer.train()
 
     # モデルの保存
     trainer.save_model(output_dir)
