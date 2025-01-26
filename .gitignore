@@ -21,3 +21,8 @@ train_output_word_time.jsonl
 train_word_time.json
 utt_time.py
 word_time.py
+important_word_clean.py
+important_word_train_clean.txt
+segments.txt
+word_time.txt
+word_timestamp.py
