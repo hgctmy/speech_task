@@ -5,6 +5,7 @@ import librosa
 import os
 import torch
 import ast
+from math import floor, ceil
 
 # ロギングの設定
 logging.basicConfig(level=logging.INFO)
@@ -33,8 +34,8 @@ def preprocess_audio(audio_file, timestamps_data, labels_data, segments, output_
 
         # 音声ファイルの読み込み
         waveform, sr = librosa.load(audio_file, sr=sample_rate)
-        if len(waveform.shape) == 2:
-            waveform = waveform.mean(axis=1)
+        '''if len(waveform.shape) == 2:
+            waveform = waveform.mean(axis=1)'''
 
         basename = timestamps_data[0]
         utterances = timestamps_data[1:]
@@ -45,19 +46,21 @@ def preprocess_audio(audio_file, timestamps_data, labels_data, segments, output_
             logger.error(f"Data mismatch: segments({len(segments_list)}), utterances({len(utterances)}), labels({len(labels_list)})")
             return
 
-        all_utterance_data = []
-        for segment, utterance, labels in zip(segments_list, utterances, labels_list):
+        for i, (segment, utterance, labels) in enumerate(zip(segments_list, utterances, labels_list)):
             # セグメントの時間情報を取得
-            start_time = segment['begin_time'] / 1000  # ミリ秒から秒に変換
+            start_time = segment['begin_time'] / 1000
             end_time = segment['end_time'] / 1000
 
             # サンプル数に変換
             start_sample = int(start_time * sample_rate)
             end_sample = int(end_time * sample_rate)
-
+            '''
+            start_sample = max(0, int(start_time * sample_rate))
+            end_sample = min(len(waveform), int(end_time * sample_rate))
+            '''
             # 有効なサンプル範囲チェック
             if start_sample >= len(waveform) or end_sample > len(waveform):
-                logger.warning(f"Invalid segment: {start_time}-{end_time} in {basename}")
+                logger.warning(f"Invalid segment: {start_time}-{end_time} in {basename}, endsample:{end_sample}, waveformlength{len(waveform)}")
                 continue
 
             # 発話単位で音声を切り出し
@@ -86,40 +89,51 @@ def preprocess_audio(audio_file, timestamps_data, labels_data, segments, output_
                 word_start = word_info['BeginTime'] / 1000
                 word_end = word_info['EndTime'] / 1000
 
-                # セグメント内での相対時間に変換
-                rel_start = word_start - start_time
-                rel_end = word_end - start_time
+                # セグメント内での相対時間に変換しクリップ
+                rel_start = max(0, word_start - start_time)
+                rel_end = min(end_time - start_time, word_end - start_time)
 
-                # サンプル数に変換
-                start_in_utterance = int(rel_start * sample_rate)
-                end_in_utterance = int(rel_end * sample_rate)
-
-                # WavLMの出力インデックスに変換（20msごとの特徴量）
-                wavlm_start = int(start_in_utterance / (0.02 * sample_rate))
-                wavlm_end = int(end_in_utterance / (0.02 * sample_rate))
-
-                # インデックスの有効性チェック
-                if wavlm_start >= wavlm_end or wavlm_end > len(wavlm_output):
-                    logger.warning(f"Invalid word indices: {word_info['Word']} in {basename}")
+                # 有効な時間範囲チェック（完全にセグメント外の場合のみスキップ）
+                if rel_end <= 0 or rel_start >= (end_time - start_time):
+                    logger.warning(f"Word completely outside segment: {word_info['Word']} ({word_start}-{word_end}) in segment {start_time}-{end_time}")
                     continue
 
-                # 特徴量の平均を取得
-                word_vec = wavlm_output[wavlm_start:wavlm_end].mean(dim=0)
+                # フレームインデックス計算
+                wavlm_start = int(floor(rel_start / 0.02))
+                wavlm_end = int(ceil(rel_end / 0.02))
+                # wavlm_start = int(round(rel_start / 20))
+                # wavlm_end = int(round(rel_end / 20))
+
+                # インデックスのクリッピング（最終チェック）
+                wavlm_start = max(0, wavlm_start)
+                wavlm_end = min(len(wavlm_output) - 1, wavlm_end)
+
+                # インデックスが無効な場合の最終チェック
+                if wavlm_start > wavlm_end:
+                    logger.warning("Invalid segment")
+                    continue
+                # 特徴量の抽出
+                elif wavlm_start == wavlm_end:
+                    # 単一フレームを取得
+                    word_vec = wavlm_output[wavlm_start]
+                else:
+                    # フレームの平均を取得
+                    word_vec = wavlm_output[wavlm_start:wavlm_end + 1].mean(dim=0)
+
                 utterance_vectors.append(word_vec)
                 utterance_labels.append(label)
 
             if utterance_vectors:
-                all_utterance_data.append({
+                utterance_data = {
                     'basename': basename,
                     'vectors': torch.stack(utterance_vectors),
                     'labels': torch.tensor(utterance_labels)
-                })
+                }
 
-        # 結果の保存
-        os.makedirs(output_dir, exist_ok=True)
-        output_path = os.path.join(output_dir, f"{basename}.pt")
-        torch.save(all_utterance_data, output_path)
-        logger.info(f"Saved processed data: {output_path}")
+                # 結果の保存
+                os.makedirs(output_dir, exist_ok=True)
+                output_path = os.path.join(output_dir, f"{basename}-{i}.pt")
+                torch.save([utterance_data], output_path)
 
     except Exception as e:
         logger.error(f"Error processing {audio_file}: {str(e)}")
@@ -130,7 +144,7 @@ audio_dir = 'audio_5700_train_dev'
 segments_file = 'segments.txt'
 timestamps_file = 'word_time.txt'
 labels_file = 'important_word_train_clean.txt'
-output_dir = "preprocessed_data"
+output_dir = "preprocessed_data_pooling_v3"
 
 # ファイル読み込み
 with open(timestamps_file, 'r', encoding='utf-8') as f:
@@ -142,8 +156,18 @@ with open(segments_file, 'r', encoding='utf-8') as f:
 with open(labels_file, 'r', encoding='utf-8') as f:
     labels_data = [ast.literal_eval(line) for line in f]
 
-# 音声ファイル処理
+
 audio_files = [os.path.join(audio_dir, f) for f in os.listdir(audio_dir) if f.endswith(".wav")]
+'''
+# 実行前にデータの整合性チェックを追加
+for seg_data, audio_file in zip(segments_data, audio_files):
+    audio_length = librosa.get_duration(filename=audio_file)
+    for segment in seg_data[1:]:
+        end_time = segment['end_time'] / 1000.0
+        if end_time > audio_length:
+            print(f"Invalid segment in {seg_data[0]}: {end_time}s > {audio_length}s")
+'''
+# 音声ファイル処理
 for audio_file, ts_data, lb_data, seg_data in tqdm(
     zip(audio_files, timestamps_data, labels_data, segments_data),
     desc="Processing Audio Files",
