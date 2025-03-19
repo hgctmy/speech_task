@@ -1,5 +1,9 @@
 import torch
 import torch.nn as nn
+<<<<<<< HEAD
+=======
+import math
+>>>>>>> 21e48d60dad9a8388e2999e1ae46cc02571d1bc7
 from torch.utils.data import Dataset, DataLoader
 import os
 from schedulefree import RAdamScheduleFree
@@ -129,7 +133,11 @@ def collate_fn(batch):
     max_len = max(lengths)
     
     padded_vectors = torch.zeros(len(vectors), max_len, vectors[0].size(1))
+<<<<<<< HEAD
     padded_labels = torch.zeros(len(vectors), max_len, dtype=torch.float)
+=======
+    padded_labels = torch.zeros(len(vectors), max_len, dtype=torch.long)
+>>>>>>> 21e48d60dad9a8388e2999e1ae46cc02571d1bc7
     attention_mask = torch.zeros(len(vectors), max_len, dtype=torch.bool)
     
     for i, (v, l) in enumerate(zip(vectors, labels)):
@@ -145,7 +153,11 @@ def train_model():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     # 全データセットの読み込み
+<<<<<<< HEAD
     full_dataset = ImportantWordDataset('preprocessed_data_pooling')
+=======
+    full_dataset = ImportantWordDataset('preprocessed_data_pooling_v3')
+>>>>>>> 21e48d60dad9a8388e2999e1ae46cc02571d1bc7
     
     # データセットの分割
     total_size = len(full_dataset)
@@ -184,6 +196,7 @@ def train_model():
     best_f1 = 0
     patience = 3
     patience_counter = 0
+<<<<<<< HEAD
     start_epoch = 0
     checkpoint_path = 'best_model.pth'  # チェックポイントファイルのパス
 
@@ -200,6 +213,10 @@ def train_model():
         print("No checkpoint found. Starting training from scratch.")
     
     for epoch in range(start_epoch, 120): # start_epoch から学習を再開
+=======
+    
+    for epoch in range(10):
+>>>>>>> 21e48d60dad9a8388e2999e1ae46cc02571d1bc7
         # 訓練フェーズ
         model.train()
         optimizer.train()
@@ -240,15 +257,22 @@ def train_model():
         model.eval()
         optimizer.eval()
         val_loss = 0
+<<<<<<< HEAD
         val_tp_total = 0  # 累積用の変数を初期化
         val_fp_total = 0
         val_fn_total = 0
+=======
+        val_tp = 0
+        val_fp = 0
+        val_fn = 0
+>>>>>>> 21e48d60dad9a8388e2999e1ae46cc02571d1bc7
 
         with torch.no_grad():
             for vectors, labels, mask in tqdm(val_loader, desc=f'Epoch {epoch+1} Validation'):
                 vectors = vectors.to(device)
                 labels = labels.to(device).float()
                 mask = mask.to(device)
+<<<<<<< HEAD
 
                 logits = model(vectors, attention_mask=mask)
                 loss = criterion(logits[mask], labels[mask])
@@ -269,6 +293,25 @@ def train_model():
         val_recall = val_tp_total / (val_tp_total + val_fn_total + 1e-12)
         val_f1 = 2 * (val_precision * val_recall) / (val_precision + val_recall + 1e-12)
         val_loss = val_loss / len(val_loader)
+=======
+                
+                logits = model(vectors, attention_mask=mask)
+                loss = criterion(logits[mask], labels[mask])
+                val_loss += loss.item()
+                
+                # メトリクス計算
+                precision, recall, f1 = calculate_metrics(logits, labels, mask)
+                val_tp += precision
+                val_fp += recall
+                val_fn += f1
+
+        # 検証メトリクスの計算
+        val_precision = val_tp / len(val_loader)
+        val_recall = val_fp / len(val_loader)
+        val_f1 = val_fn / len(val_loader)
+        val_loss = val_loss / len(val_loader)
+
+>>>>>>> 21e48d60dad9a8388e2999e1ae46cc02571d1bc7
         # 結果の表示
         print(f'Epoch {epoch+1}:')
         print(f'Train Loss: {train_loss:.4f} | Train F1: {train_f1:.4f}')
@@ -285,7 +328,11 @@ def train_model():
                 'train_f1': train_f1,
                 'val_f1': val_f1,
                 'best_f1': best_f1
+<<<<<<< HEAD
             }, checkpoint_path) # チェックポイントファイルを指定
+=======
+            }, 'best_model.pth')
+>>>>>>> 21e48d60dad9a8388e2999e1ae46cc02571d1bc7
         else:
             patience_counter += 1
             if patience_counter >= patience:
@@ -293,4 +340,8 @@ def train_model():
                 break
 
 if __name__ == '__main__':
+<<<<<<< HEAD
     train_model()
+=======
+    train_model()
+>>>>>>> 21e48d60dad9a8388e2999e1ae46cc02571d1bc7

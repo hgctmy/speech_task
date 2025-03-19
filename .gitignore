@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 preprocessed_data_pooling
 audio_5700_train_dev
 audio_5700_train_dev.tar.zip
@@ -18,3 +19,33 @@ word_time.txt
 best_model.pth
 best_model_tuned_ones.pth
 audio_5700_train_dev.tar.gz
+=======
+ASR
+speech_task
+text_5700_test
+text_5700_train_dev
+wav2vec
+audio_5700_test.tar.gz
+audio_5700_train_dev.tar.gz
+important_frame_train.txt
+important_word_train.txt
+data_clean.py
+important_frame.py
+important_word_label.py
+important_frame_train.txt
+important_word_train.txt
+ontology.py
+ontology.json
+ontology_values.csv
+train_clean.json
+train_output_clean.jsonl
+train_output_word_time.jsonl
+train_word_time.json
+utt_time.py
+word_time.py
+important_word_clean.py
+important_word_train_clean.txt
+segments.txt
+word_time.txt
+word_timestamp.py
+>>>>>>> 21e48d60dad9a8388e2999e1ae46cc02571d1bc7
